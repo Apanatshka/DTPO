@@ -18,8 +18,10 @@ import numpy as np
 
 import seaborn as sns
 
-from dtpo.dqn import DqnLearner
-from dtpo.utils import make_env_from_name
+from tqdm import tqdm
+
+from dtpo.lib.ppo_nn import PpoLearner
+from dtpo.lib.utils import make_env_from_name
 
 parser = argparse.ArgumentParser()
 
@@ -49,57 +51,84 @@ parser.add_argument(
     help="number of rollouts to do for the final evaluation",
 )
 
-# Arguments specific to deep q learning (the teacher model)
+# Arguments specific to PPO
 parser.add_argument(
     "--total-timesteps",
     type=int,
     default=10000000,
-    help="total environment timesteps to use in training",
+    help="total timesteps of the experiments",
 )
 parser.add_argument(
     "--learning-rate",
     type=float,
     default=2.5e-4,
-    help="learning rate for the Adam optimizer",
+    help="the learning rate of the optimizer",
 )
 parser.add_argument(
-    "--buffer-size", type=int, default=10000, help="size of the experience buffer"
+    "--num-envs", type=int, default=4, help="the number of parallel game environments"
 )
 parser.add_argument(
-    "--gamma", type=float, default=0.99, help="discount value for future rewards"
-)
-parser.add_argument(
-    "--tau", type=float, default=1.0, help="the target network update rate"
-)
-parser.add_argument(
-    "--target-network-frequency",
-    type=int,
-    default=500,
-    help="the timesteps it takes to update the target network",
-)
-parser.add_argument(
-    "--batch-size",
+    "--num-steps",
     type=int,
     default=128,
-    help="the batch size of sample from the reply memory",
+    help="the number of steps to run in each environment per policy rollout",
 )
 parser.add_argument(
-    "--start-e", type=float, default=1, help="the starting epsilon for exploration"
+    "--anneal-lr",
+    type=lambda x: bool(strtobool(x)),
+    default=True,
+    nargs="?",
+    const=True,
+    help="Toggle learning rate annealing for policy and value networks",
 )
 parser.add_argument(
-    "--end-e", type=float, default=0.05, help="the ending epsilon for exploration"
+    "--gamma", type=float, default=0.99, help="the discount factor gamma"
 )
 parser.add_argument(
-    "--exploration-fraction",
+    "--gae-lambda",
+    type=float,
+    default=0.95,
+    help="the lambda for the general advantage estimation",
+)
+parser.add_argument(
+    "--num-minibatches", type=int, default=4, help="the number of mini-batches"
+)
+parser.add_argument(
+    "--update-epochs", type=int, default=4, help="the K epochs to update the policy"
+)
+parser.add_argument(
+    "--norm-adv",
+    type=lambda x: bool(strtobool(x)),
+    default=True,
+    nargs="?",
+    const=True,
+    help="Toggles advantages normalization",
+)
+parser.add_argument(
+    "--clip-coef", type=float, default=0.2, help="the surrogate clipping coefficient"
+)
+parser.add_argument(
+    "--clip-vloss",
+    type=lambda x: bool(strtobool(x)),
+    default=True,
+    nargs="?",
+    const=True,
+    help="Toggles whether or not to use a clipped loss for the value function, as per the paper.",
+)
+parser.add_argument(
+    "--ent-coef", type=float, default=0.01, help="coefficient of the entropy"
+)
+parser.add_argument(
+    "--vf-coef", type=float, default=0.5, help="coefficient of the value function"
+)
+parser.add_argument(
+    "--max-grad-norm",
     type=float,
     default=0.5,
-    help="the fraction of `total-timesteps` it takes from start-e to go end-e",
+    help="the maximum norm for the gradient clipping",
 )
 parser.add_argument(
-    "--learning-starts", type=int, default=10000, help="timestep to start learning"
-)
-parser.add_argument(
-    "--train-frequency", type=int, default=10, help="the frequency of training"
+    "--target-kl", type=float, default=None, help="the target KL divergence threshold"
 )
 
 args = parser.parse_args()
@@ -109,7 +138,7 @@ env, env_params, vec_env = make_env_from_name(
 )
 
 timestamp = int(time.time() * 1000)
-experiment_name = f"{args.env_name}_dqn_{timestamp}_{args.seed}"
+experiment_name = f"{args.env_name}_ppo_{timestamp}_{args.seed}"
 experiment_dir = f"{args.output_dir}/{experiment_name}"
 
 # Create the experiment output directory if it does not exist
@@ -133,47 +162,41 @@ print("=" * 50)
 # Create the learner and optimize the policy
 start_time = time.time()
 
-learner = DqnLearner(
+learner = PpoLearner(
     seed=args.seed,
+    torch_deterministic=True,
+    cuda="cpu",
     total_timesteps=args.total_timesteps,
     learning_rate=args.learning_rate,
-    num_envs=1,
-    buffer_size=args.buffer_size,
+    num_envs=args.num_envs,
+    num_steps=args.num_steps,
+    anneal_lr=args.anneal_lr,
     gamma=args.gamma,
-    tau=args.tau,
-    target_network_frequency=args.target_network_frequency,
-    batch_size=args.batch_size,
-    start_e=args.start_e,
-    end_e=args.end_e,
-    exploration_fraction=args.exploration_fraction,
-    learning_starts=args.learning_starts,
-    train_frequency=args.train_frequency,
+    gae_lambda=args.gae_lambda,
+    num_minibatches=args.num_minibatches,
+    update_epochs=args.update_epochs,
+    norm_adv=args.norm_adv,
+    clip_coef=args.clip_coef,
+    clip_vloss=args.clip_vloss,
+    ent_coef=args.ent_coef,
+    vf_coef=args.vf_coef,
+    max_grad_norm=args.max_grad_norm,
+    target_kl=args.target_kl,
     verbose=args.verbose,
 )
 learner.learn(vec_env)
 
 # Always save the model in the experiment directory (also when using a pretrained model)
-model_path = f"{experiment_dir}/jax_dqn_model.flax"
+model_path = f"{experiment_dir}/jax_ppo_model.torch"
 learner.save_model(model_path)
 
 runtime = time.time() - start_time
 
 sns.set_theme(context="talk", style="whitegrid", palette="colorblind")
 
-
-# From: https://stackoverflow.com/a/14314054/15406859
-def moving_average(a, n):
-    ret = np.cumsum(a, dtype=float)
-    ret[n:] = ret[n:] - ret[:-n]
-    return ret[n - 1 :] / n
-
-
 # Plot the policy's return per policy update
 episodes = np.arange(len(learner.episodic_returns_))
-n_average = 100
-sns.lineplot(
-    x=episodes[n_average - 1 :], y=moving_average(learner.episodic_returns_, n_average)
-)
+sns.lineplot(x=episodes, y=learner.episodic_returns_)
 plt.tight_layout()
 filename = f"{experiment_dir}/return_per_episode"
 plt.savefig(filename + ".png")
@@ -185,7 +208,7 @@ print(vars(args))
 print("=" * 50)
 
 returns = []
-for repetition in range(args.evaluation_rollouts):
+for repetition in tqdm(range(args.evaluation_rollouts)):
     rng, rng_reset = jax.random.split(rng)
     obs, env_state = env.reset(rng_reset, env_params)
     total_return = 0
@@ -194,7 +217,7 @@ for repetition in range(args.evaluation_rollouts):
 
         # Since the learner.tree_policy_ is a classifier we don't have to use
         # the argmax, just predict()
-        action = learner.predict(np.array(obs).reshape(1, -1))[0]
+        action = learner.predict(np.array(obs).reshape(1, -1))[0].item()
         next_obs, next_env_state, reward, done, info = env.step(
             rng_step, env_state, action, env_params
         )
@@ -212,7 +235,7 @@ filename = f"{experiment_dir}/results.json"
 with open(filename, "w") as file:
     json.dump(
         {
-            "method": "dqn",
+            "method": "ppo",
             "mean_return": float(np.mean(returns)),
             "std_return": float(np.std(returns)),
             "sem_return": float(np.std(returns) / np.sqrt(len(returns))),

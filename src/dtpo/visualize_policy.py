@@ -4,8 +4,8 @@ from gymnax.visualize import Visualizer
 import jax
 import jax.numpy as jnp
 
-from dtpo.dtpo import DecisionTreePolicy
-from dtpo.utils import make_env_from_name
+from dtpo.lib.dtpo import DecisionTreePolicy
+from dtpo.lib.utils import make_env_from_name
 
 import math
 
@@ -42,7 +42,7 @@ env, env_params = make_env_from_name(args.env_name, args.seed)
 
 # hacky way to make CartPoleSwingup work with the visualization code for CartPole-v1
 if args.env_name == "CartPoleSwingup":
-    from dtpo.environments.cartpoleswingup import CartPoleSwingUp
+    from dtpo.lib.environments.cartpoleswingup import CartPoleSwingUp
 
     CartPoleSwingUp.name = property(lambda _: "CartPole-v1")
 

@@ -22,10 +22,10 @@ import seaborn as sns
 
 from tqdm import tqdm
 
-from dtpo.dqn import DqnLearner
-from dtpo.utils import make_env_from_name
-from dtpo.viper import ViperLearner
-from dtpo.visualization import export_tree
+from dtpo.lib.dqn import DqnLearner
+from dtpo.lib.utils import make_env_from_name
+from dtpo.lib.viper import ViperLearner
+from dtpo.lib.visualization import export_tree
 
 parser = argparse.ArgumentParser()
 
