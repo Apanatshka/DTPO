@@ -1,28 +1,20 @@
 import argparse
-
-from distutils.util import strtobool
-
 import json
-
+import time
+from distutils.util import strtobool
 from pathlib import Path
 
-import time
-
 import gymnax
-
 import jax
-
 import matplotlib.pyplot as plt
-
 import numpy as np
-
 import seaborn as sns
-
 from tqdm import tqdm
 
 from dtpo.lib.dtpo import DTPOLearner
 from dtpo.lib.utils import make_env_from_name
 from dtpo.lib.visualization import export_tree
+
 
 def main():
     parser = argparse.ArgumentParser()

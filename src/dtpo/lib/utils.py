@@ -1,8 +1,7 @@
+import gymnasium
 import gymnax
 
 from .gymnax_wrapper import GymnaxToGymnasiumWrapper, GymnaxToVectorGymnasiumWrapper
-
-import gymnasium
 
 
 class Leaf:
@@ -10,6 +9,13 @@ class Leaf:
         self.value = value
         self.prune = prune
         self.id = None
+
+    def to_dict(self):
+        return {
+            "value": str(self.value),
+            "prune": self.prune,
+            "id": self.id,
+        }
 
 
 class Node:
@@ -20,10 +26,17 @@ class Node:
         self.right = right
         self.id = None
 
+    def to_dict(self):
+        return {
+            "feature": str(self.feature),
+            "threshold": str(self.threshold),
+            "left": self.left.to_dict(),
+            "right": self.right.to_dict(),
+            "id": self.id,
+        }
 
-def make_env_from_name(
-    env_name, seed=None, return_gym_env=False, return_gym_vec_env=False, num_envs_vec=1
-):
+
+def make_env_from_name(env_name, seed=None, return_gym_env=False, return_gym_vec_env=False, num_envs_vec=1):
     """
     Returns a gymnax or gymnasium environment and env_params with the given name.
     For gymnasium environments the env_params returned is None.
@@ -109,19 +122,15 @@ def make_env_from_name(
     if return_gym_vec_env:
         # If env_params is None then this is already a gymnasium environment
         if env_params is None:
-            gym_vec_env = gymnasium.vector.SyncVectorEnv(
-                [lambda: env for _ in range(num_envs_vec)]
-            )
+            gym_vec_env = gymnasium.vector.SyncVectorEnv([lambda: env for _ in range(num_envs_vec)])
         else:
-            gym_vec_env = GymnaxToVectorGymnasiumWrapper(
-                env=env, num_envs=num_envs_vec, params=env_params, seed=seed
-            )
+            gym_vec_env = GymnaxToVectorGymnasiumWrapper(env=env, num_envs=num_envs_vec, params=env_params, seed=seed)
 
     if not return_gym_env and not return_gym_vec_env:
         return env, env_params
-    elif return_gym_env and not return_gym_vec_env:
+    if return_gym_env and not return_gym_vec_env:
         return env, env_params, gym_env
-    elif not return_gym_env and return_gym_vec_env:
+    if not return_gym_env and return_gym_vec_env:
         return env, env_params, gym_vec_env
-    elif return_gym_env and return_gym_vec_env:
+    if return_gym_env and return_gym_vec_env:
         return env, env_params, gym_env, gym_vec_env

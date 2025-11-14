@@ -1,25 +1,15 @@
 import argparse
-
-from distutils.util import strtobool
-
 import json
-
+import time
+from distutils.util import strtobool
 from pathlib import Path
 
-import time
-
 import gymnasium
-
 import gymnax
-
 import jax
-
 import matplotlib.pyplot as plt
-
 import numpy as np
-
 import seaborn as sns
-
 from tqdm import tqdm
 
 from dtpo.lib.dqn import DqnLearner
@@ -30,12 +20,8 @@ from dtpo.lib.visualization import export_tree
 parser = argparse.ArgumentParser()
 
 # General arguments
-parser.add_argument(
-    "--env-name", type=str, default="CartPole-v1", help="the name of the environment"
-)
-parser.add_argument(
-    "--seed", type=int, default=1, help="random seed for the experiment"
-)
+parser.add_argument("--env-name", type=str, default="CartPole-v1", help="the name of the environment")
+parser.add_argument("--seed", type=int, default=1, help="random seed for the experiment")
 parser.add_argument(
     "--verbose",
     type=lambda x: bool(strtobool(x)),
@@ -68,15 +54,9 @@ parser.add_argument(
     default=2.5e-4,
     help="learning rate for the Adam optimizer",
 )
-parser.add_argument(
-    "--buffer-size", type=int, default=10000, help="size of the experience buffer"
-)
-parser.add_argument(
-    "--gamma", type=float, default=0.99, help="discount value for future rewards"
-)
-parser.add_argument(
-    "--tau", type=float, default=1.0, help="the target network update rate"
-)
+parser.add_argument("--buffer-size", type=int, default=10000, help="size of the experience buffer")
+parser.add_argument("--gamma", type=float, default=0.99, help="discount value for future rewards")
+parser.add_argument("--tau", type=float, default=1.0, help="the target network update rate")
 parser.add_argument(
     "--target-network-frequency",
     type=int,
@@ -89,29 +69,19 @@ parser.add_argument(
     default=128,
     help="the batch size of sample from the reply memory",
 )
-parser.add_argument(
-    "--start-e", type=float, default=1, help="the starting epsilon for exploration"
-)
-parser.add_argument(
-    "--end-e", type=float, default=0.05, help="the ending epsilon for exploration"
-)
+parser.add_argument("--start-e", type=float, default=1, help="the starting epsilon for exploration")
+parser.add_argument("--end-e", type=float, default=0.05, help="the ending epsilon for exploration")
 parser.add_argument(
     "--exploration-fraction",
     type=float,
     default=0.5,
     help="the fraction of `total-timesteps` it takes from start-e to go end-e",
 )
-parser.add_argument(
-    "--learning-starts", type=int, default=10000, help="timestep to start learning"
-)
-parser.add_argument(
-    "--train-frequency", type=int, default=10, help="the frequency of training"
-)
+parser.add_argument("--learning-starts", type=int, default=10000, help="timestep to start learning")
+parser.add_argument("--train-frequency", type=int, default=10, help="the frequency of training")
 
 # Arguments specific to VIPER (the student model)
-parser.add_argument(
-    "--max-depth", type=int, default=None, help="maximum depth of the decision tree"
-)
+parser.add_argument("--max-depth", type=int, default=None, help="maximum depth of the decision tree")
 parser.add_argument(
     "--max-leaf-nodes",
     type=int,
@@ -217,9 +187,7 @@ random_state = np.random.RandomState(args.seed)
 
 rng, rng_vis = jax.random.split(rng)
 
-assert isinstance(
-    vec_env.single_action_space, gymnasium.spaces.Discrete
-), "only discrete action spaces are supported"
+assert isinstance(vec_env.single_action_space, gymnasium.spaces.Discrete), "only discrete action spaces are supported"
 
 print("=" * 50)
 print(vars(args))
@@ -250,7 +218,9 @@ if args.pretrained_model_path is None:
         verbose=args.verbose,
     )
     teacher.learn(vec_env)
-    teacher.save_model(f"{dqn_dir}/jax_dqn_model.flax")
+    model_path = f"{dqn_dir}/jax_dqn_model.flax"
+    teacher.save_model(model_path)
+    print(f"Saved model at: {model_path}")
 else:
     if args.verbose:
         print("Using a pretrained DQN model, training arguments are ignored")
@@ -277,7 +247,7 @@ learner = ViperLearner(
     is_train=True,
     random_state=random_state,
 )
-learner.learn(gym_env, teacher)
+recursive_tree = learner.learn(gym_env, teacher)
 runtime = time.time() - start_time
 
 sns.set_theme(context="talk", style="whitegrid", palette="colorblind")
@@ -359,6 +329,8 @@ export_tree(
     feature_names,
     action_names,
 )
+with open(filename + ".json", "w") as f:
+    json.dump(recursive_tree.to_dict(), f)
 
 print("=" * 50)
 print(vars(args))
@@ -383,8 +355,7 @@ def evaluate_policy(predict):
             total_discounted_return += reward * args.gamma**i
             if terminated or truncated:
                 break
-            else:
-                obs = next_obs
+            obs = next_obs
 
             i += 1
 
@@ -405,9 +376,7 @@ with open(filename, "w") as file:
             "std_return": float(np.std(returns)),
             "sem_return": float(np.std(returns) / np.sqrt(len(returns))),
             "mean_discounted_return": float(np.mean(discounted_returns)),
-            "sem_discounted_return": float(
-                np.std(discounted_returns) / np.sqrt(len(discounted_returns))
-            ),
+            "sem_discounted_return": float(np.std(discounted_returns) / np.sqrt(len(discounted_returns))),
             "runtime": dqn_runtime,
             "iterations": len(teacher.iterations_),
             "mean_discounted_returns": teacher.episodic_returns_,
@@ -428,9 +397,7 @@ with open(filename, "w") as file:
             "std_return": float(np.std(returns)),
             "sem_return": float(np.std(returns) / np.sqrt(len(returns))),
             "mean_discounted_return": float(np.mean(discounted_returns)),
-            "sem_discounted_return": float(
-                np.std(discounted_returns) / np.sqrt(len(discounted_returns))
-            ),
+            "sem_discounted_return": float(np.std(discounted_returns) / np.sqrt(len(discounted_returns))),
             "runtime": runtime,
             "n_nodes": n_nodes,
             "mean_discounted_returns": teacher.episodic_returns_,

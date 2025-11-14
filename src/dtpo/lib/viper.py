@@ -1,11 +1,10 @@
 import numpy as np
-
 from sklearn.model_selection import train_test_split
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.tree._tree import Tree
 from sklearn.utils import check_random_state
 
-from .utils import Node, Leaf
+from .utils import Leaf, Node
 
 
 def accuracy(policy, obss, acts):
@@ -19,9 +18,7 @@ class DTPolicy:
         self.random_state = random_state
 
     def fit(self, obss, acts):
-        self.tree = DecisionTreeClassifier(
-            max_depth=self.max_depth, max_leaf_nodes=self.max_leaf_nodes
-        )
+        self.tree = DecisionTreeClassifier(max_depth=self.max_depth, max_leaf_nodes=self.max_leaf_nodes)
         self.tree.fit(obss, acts)
 
     def train(self, obss, acts, train_frac):
@@ -29,9 +26,9 @@ class DTPolicy:
             obss, acts, train_size=train_frac, random_state=self.random_state
         )
         self.fit(obss_train, acts_train)
-        print("Train accuracy: {}".format(accuracy(self, obss_train, acts_train)))
-        print("Test accuracy: {}".format(accuracy(self, obss_test, acts_test)))
-        print("Number of nodes: {}".format(self.tree.tree_.node_count))
+        print(f"Train accuracy: {accuracy(self, obss_train, acts_train)}")
+        print(f"Test accuracy: {accuracy(self, obss_test, acts_test)}")
+        print(f"Number of nodes: {self.tree.tree_.node_count}")
 
     def predict(self, obss):
         return self.tree.predict(obss)
@@ -97,9 +94,7 @@ def prune_sklearn_tree(sklearn_tree: DecisionTreeClassifier):
         node_count += 1
 
         if isinstance(subtree, Node):
-            node_count, max_depth = count_and_assign_ids(
-                subtree.left, depth + 1, node_count, max_depth
-            )
+            node_count, max_depth = count_and_assign_ids(subtree.left, depth + 1, node_count, max_depth)
             return count_and_assign_ids(subtree.right, depth + 1, node_count, max_depth)
 
         return node_count, max_depth
@@ -150,7 +145,7 @@ def prune_sklearn_tree(sklearn_tree: DecisionTreeClassifier):
         "values": values,
     }
     tree.__setstate__(state)
-    return tree
+    return tree, pruned_tree_object
 
 
 # TODO: add verbose setting
@@ -208,15 +203,15 @@ class ViperLearner:
             raise NotImplementedError()
 
         # Test student
-        rew = test_policy(
-            env, student, identity_state_transformer, self.n_test_rollouts
-        )
-        print("Final reward: {}".format(rew))
-        print("Number of nodes: {}".format(student.tree.tree_.node_count))
+        rew = test_policy(env, student, identity_state_transformer, self.n_test_rollouts)
+        print(f"Final reward: {rew}")
+        print(f"Number of nodes: {student.tree.tree_.node_count}")
 
-        student.tree.tree_ = prune_sklearn_tree(student.tree)
+        student.tree.tree_, recursive_tree = prune_sklearn_tree(student.tree)
 
         self.tree_policy_ = student.tree
+
+        return recursive_tree
 
 
 class TransformerPolicy:
@@ -225,9 +220,7 @@ class TransformerPolicy:
         self.state_transformer = state_transformer
 
     def predict(self, obss):
-        return self.policy.predict(
-            np.array([self.state_transformer(obs) for obs in obss])
-        )
+        return self.policy.predict(np.array([self.state_transformer(obs) for obs in obss]))
 
 
 def get_rollout(env, policy, render):
@@ -275,9 +268,7 @@ def _sample(obss, acts, qs, max_pts, is_reweight, random_state):
         idx = random_state.choice(len(obss), size=min(max_pts, np.sum(ps > 0)), p=ps)
     else:
         # Uniformly (without replacement)
-        idx = random_state.choice(
-            len(obss), size=min(max_pts, np.sum(ps > 0)), replace=False
-        )
+        idx = random_state.choice(len(obss), size=min(max_pts, np.sum(ps > 0)), replace=False)
 
     # Step 3: Obtain sampled indices
     return obss[idx], acts[idx], qs[idx]
@@ -293,7 +284,7 @@ def test_policy(env, policy, state_transformer, n_test_rollouts):
 
 
 def identify_best_policy(env, policies, state_transformer, n_test_rollouts):
-    print("Initial policy count: {}".format(len(policies)))
+    print(f"Initial policy count: {len(policies)}")
     # cut policies by half on each iteration
     while len(policies) > 1:
         # Step 1: Sort policies by current estimated reward
@@ -301,7 +292,7 @@ def identify_best_policy(env, policies, state_transformer, n_test_rollouts):
 
         # Step 2: Prune second half of policies
         n_policies = int((len(policies) + 1) / 2)
-        print("Current policy count: {}".format(n_policies))
+        print(f"Current policy count: {n_policies}")
 
         # Step 3: build new policies
         new_policies = []
@@ -309,7 +300,7 @@ def identify_best_policy(env, policies, state_transformer, n_test_rollouts):
             policy, rew = policies[i]
             new_rew = test_policy(env, policy, state_transformer, n_test_rollouts)
             new_policies.append((policy, new_rew))
-            print("Reward update: {} -> {}".format(rew, new_rew))
+            print(f"Reward update: {rew} -> {new_rew}")
 
         policies = new_policies
 
@@ -345,7 +336,7 @@ def train_dagger(
 
     # Step 2: Dagger outer loop
     for i in range(max_iters):
-        print("Iteration {}/{}".format(i, max_iters))
+        print(f"Iteration {i}/{max_iters}")
 
         # Step 2a: Train from a random subset of aggregated data
         cur_obss, cur_acts, cur_qs = _sample(
@@ -356,7 +347,7 @@ def train_dagger(
             is_reweight,
             random_state,
         )
-        print("Training student with {} points".format(len(cur_obss)))
+        print(f"Training student with {len(cur_obss)} points")
         student.train(cur_obss, cur_acts, train_frac)
 
         # Step 2b: Generate trace using student
@@ -370,18 +361,16 @@ def train_dagger(
         teacher_acts = teacher.predict(student_obss)
 
         # Step 2d: Add the augmented state-action pairs back to aggregate
-        obss.extend((state_transformer(obs) for obs in student_obss))
+        obss.extend(state_transformer(obs) for obs in student_obss)
         acts.extend(teacher_acts)
         qs.extend(teacher_qs)
 
         # Step 2e: Estimate the reward
         cur_rew = sum((rew for _, _, rew in student_trace)) / n_batch_rollouts
-        print("Student reward: {}".format(cur_rew))
+        print(f"Student reward: {cur_rew}")
 
         students.append((student.clone(), cur_rew))
 
-    max_student = identify_best_policy(
-        env, students, state_transformer, n_test_rollouts
-    )
+    max_student = identify_best_policy(env, students, state_transformer, n_test_rollouts)
 
     return max_student
