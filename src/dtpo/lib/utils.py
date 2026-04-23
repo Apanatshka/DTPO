@@ -36,7 +36,9 @@ class Node:
         }
 
 
-def make_env_from_name(env_name, seed=None, return_gym_env=False, return_gym_vec_env=False, num_envs_vec=1):
+def make_env_from_name(
+    env_name, seed=None, return_gym_env=False, return_gym_vec_env=False, num_envs_vec=1, mdp_file=None
+):
     """
     Returns a gymnax or gymnasium environment and env_params with the given name.
     For gymnasium environments the env_params returned is None.
@@ -104,6 +106,10 @@ def make_env_from_name(env_name, seed=None, return_gym_env=False, return_gym_vec
             from .environments.xor import Xor
 
             env = Xor()
+        elif env_name == "CustomMdp":
+            from .environments.mdp import CustomMdp
+
+            env = CustomMdp(mdp_file)
         else:
             raise ValueError(f"Unkown env_name {env_name}")
 

@@ -19,12 +19,9 @@ from dtpo.lib.visualization import export_tree
 def main():
     parser = argparse.ArgumentParser()
 
-    parser.add_argument(
-        "--env-name", type=str, default="CartPole-v1", help="the name of the environment"
-    )
-    parser.add_argument(
-        "--max-depth", type=int, default=None, help="maximum depth of the decision tree"
-    )
+    parser.add_argument("--env-name", type=str, default="CartPole-v1", help="the name of the environment")
+    parser.add_argument("--mdp-file", type=str, default=None, help="a numpy saved set of arrays describing the MDP")
+    parser.add_argument("--max-depth", type=int, default=None, help="maximum depth of the decision tree")
     parser.add_argument(
         "--max-leaf-nodes",
         type=int,
@@ -67,9 +64,7 @@ def main():
         default=1.0,
         help="learning rate for gradient updates",
     )
-    parser.add_argument(
-        "--gamma", type=float, default=0.99, help="discount value for future rewards"
-    )
+    parser.add_argument("--gamma", type=float, default=0.99, help="discount value for future rewards")
     parser.add_argument(
         "--normalize-advantage",
         type=lambda x: bool(strtobool(x)),
@@ -82,9 +77,7 @@ def main():
         default=0.01,
         help="entropy value to stop at before discretizing",
     )
-    parser.add_argument(
-        "--seed", type=int, default=1, help="random seed for the experiment"
-    )
+    parser.add_argument("--seed", type=int, default=1, help="random seed for the experiment")
     parser.add_argument(
         "--evaluation-rollouts",
         type=int,
@@ -124,7 +117,7 @@ def main():
 
     args = parser.parse_args()
 
-    env, env_params = make_env_from_name(args.env_name, args.seed)
+    env, env_params = make_env_from_name(args.env_name, args.seed, mdp_file=args.mdp_file)
 
     experiment_name = f"{args.env_name}_dtpo_{int(time.time() * 10000)}_{args.seed}"
     experiment_dir = f"{args.output_dir}/{experiment_name}"
@@ -180,9 +173,7 @@ def main():
     plt.ylabel("mean discounted return")
     plt.tight_layout()
 
-    returns_indicated = np.array(model.mean_discounted_returns_)[
-        model.iteration_updated_tree_
-    ]
+    returns_indicated = np.array(model.mean_discounted_returns_)[model.iteration_updated_tree_]
     iterations_indicated = iterations[model.iteration_updated_tree_]
     # sns.scatterplot(x=iterations_indicated, y=returns_indicated, s=1)
     plt.scatter(
@@ -296,7 +287,6 @@ def main():
         action_names,
     )
 
-
     def default(obj):
         if isinstance(obj, jax.Array):
             if len(obj.shape) == 0:
@@ -309,7 +299,6 @@ def main():
                 return [list(sublist) for sublist in obj]
 
         raise TypeError(f"Could not convert {obj} to JSON compatible type")
-
 
     filename = f"{experiment_dir}/tree_params.json"
     with open(filename, "w") as file:
@@ -329,19 +318,14 @@ def main():
             total_discounted_return = 0
             for i in range(env_params.max_steps_in_episode):
                 rng, rng_step = jax.random.split(rng, 2)
-                action = np.argmax(
-                    model.discretized_tree_.predict(np.array(obs).reshape(1, -1))[0]
-                )
-                next_obs, next_env_state, reward, done, info = env.step(
-                    rng_step, env_state, action, env_params
-                )
+                action = np.argmax(model.discretized_tree_.predict(np.array(obs).reshape(1, -1))[0])
+                next_obs, next_env_state, reward, done, info = env.step(rng_step, env_state, action, env_params)
                 total_return += reward
                 total_discounted_return += reward * args.gamma**i
                 if done:
                     break
-                else:
-                    obs = next_obs
-                    env_state = next_env_state
+                obs = next_obs
+                env_state = next_env_state
 
             returns.append(total_return.item())
             discounted_returns.append(total_discounted_return.item())
@@ -352,9 +336,7 @@ def main():
             total_discounted_return = 0
             i = 0
             while True:
-                action = np.argmax(
-                    model.discretized_tree_.predict(np.array(obs).reshape(1, -1))[0]
-                )
+                action = np.argmax(model.discretized_tree_.predict(np.array(obs).reshape(1, -1))[0])
                 next_obs, reward, terminated, truncated, info = env.step(action)
                 total_return += reward
                 total_discounted_return += reward * args.gamma**i
@@ -379,9 +361,7 @@ def main():
                 "std_return": float(np.std(returns)),
                 "sem_return": float(np.std(returns) / np.sqrt(len(returns))),
                 "mean_discounted_return": float(np.mean(discounted_returns)),
-                "sem_discounted_return": float(
-                    np.std(discounted_returns) / np.sqrt(len(discounted_returns))
-                ),
+                "sem_discounted_return": float(np.std(discounted_returns) / np.sqrt(len(discounted_returns))),
                 "runtime": runtime,
                 "n_nodes": n_nodes,
                 "iterations": len(model.mean_discounted_returns_),
@@ -392,5 +372,6 @@ def main():
             file,
             indent=4,
         )
+
 
 main()

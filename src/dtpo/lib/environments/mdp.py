@@ -1,13 +1,11 @@
-from typing import Tuple, Optional
+from pathlib import Path
 
 import chex
-
-from flax import struct
-
-from gymnax.environments import environment, spaces
-
-import jax.numpy as jnp
 import jax
+import jax.numpy as jnp
+import numpy as np
+from flax import struct
+from gymnax.environments import environment, spaces
 from jax import lax
 
 
@@ -40,13 +38,11 @@ class MdpEnv(environment.Environment):
         state: EnvState,
         action: float,
         params: MarkovDecisionProcessParams,
-    ) -> Tuple[chex.Array, EnvState, float, bool, dict]:
+    ) -> tuple[chex.Array, EnvState, float, bool, dict]:
         # Shape: state, next_state, action
         trans_probs = params.trans_probs[state.state_index, :, action]
 
-        next_state_index = jax.random.choice(
-            key, params.trans_probs.shape[0], p=trans_probs
-        )
+        next_state_index = jax.random.choice(key, params.trans_probs.shape[0], p=trans_probs)
 
         reward = params.rewards[state.state_index, next_state_index, action]
 
@@ -67,15 +63,11 @@ class MdpEnv(environment.Environment):
             {"discount": self.discount(next_state, params)},
         )
 
-    def reset_env(
-        self, key: chex.PRNGKey, params: MarkovDecisionProcessParams
-    ) -> Tuple[chex.Array, EnvState]:
+    def reset_env(self, key: chex.PRNGKey, params: MarkovDecisionProcessParams) -> tuple[chex.Array, EnvState]:
         """Reset environment state by sampling theta, theta_dot."""
         if params is None:
             params = self.default_params
-        state_index = jax.random.choice(
-            key, params.initial_state_p.shape[0], p=params.initial_state_p
-        )
+        state_index = jax.random.choice(key, params.initial_state_p.shape[0], p=params.initial_state_p)
         observation = params.observations[state_index]
         state = EnvState(state_index=state_index, time=0)
         return observation, state
@@ -102,9 +94,7 @@ class MdpEnv(environment.Environment):
         """Number of actions possible in environment."""
         return len(self.action_names)
 
-    def action_space(
-        self, params: Optional[MarkovDecisionProcessParams] = None
-    ) -> spaces.Discrete:
+    def action_space(self, params: MarkovDecisionProcessParams | None = None) -> spaces.Discrete:
         """Action space of the environment."""
         return spaces.Discrete(self.num_actions)
 
@@ -112,9 +102,7 @@ class MdpEnv(environment.Environment):
         """Observation space of the environment."""
         low = params.observations.min(axis=0)
         high = params.observations.max(axis=0)
-        return spaces.Box(
-            low, high, shape=(params.observations.shape[1],), dtype=jnp.float32
-        )
+        return spaces.Box(low, high, shape=(params.observations.shape[1],), dtype=jnp.float32)
 
     def state_space(self, params: MarkovDecisionProcessParams) -> spaces.Dict:
         """State space of the environment."""
@@ -184,3 +172,33 @@ def remove_unreachable_states_mdp(mdp: MarkovDecisionProcessParams):
     )
 
     return new_mdp
+
+
+class CustomMdp(MdpEnv):
+    def __init__(self, mdp_file: str):
+        self.name_ = Path(mdp_file).stem
+
+        with np.load(mdp_file, allow_pickle=True) as data:
+            ## Boswachter side:
+            # observations=self._mdp.observations,
+            # trans_probs=self._mdp.trans_probs,
+            # rewards=self._mdp.rewards,
+            # initial_state_probs=self._mdp.initial_state_probs,
+            # terminal_states=np.array([self._mdp.terminal_states]),
+            # feature_names=np.array(self.feature_names),
+            # action_names=np.array(self.action_names),
+
+            observations = jnp.array(data["observations"])
+            trans_probs = jnp.array(data["trans_probs"])
+            rewards = jnp.array(data["rewards"])
+            initial_state_p = jnp.array(data["initial_state_probs"])
+            self.default_params_ = MarkovDecisionProcessParams(
+                trans_probs=trans_probs,
+                rewards=rewards,
+                initial_state_p=initial_state_p,
+                observations=observations,
+            )
+            self.feature_names = list(data["feature_names"])
+            self.action_names = list(data["action_names"])
+
+            self.obs_shape = (len(self.feature_names),)
