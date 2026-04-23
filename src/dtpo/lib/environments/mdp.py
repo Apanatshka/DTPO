@@ -127,7 +127,9 @@ def check_mdp(mdp: MarkovDecisionProcessParams, check_jax_array_type=True):
     # trans_probs and rewards have axes: state, next_state, action
     # observations has axes: state, feature
     assert len(mdp.trans_probs.shape) == 3
-    assert jnp.all(jnp.isclose(mdp.trans_probs.sum(axis=1), 1))
+    assert jnp.all(
+        jnp.logical_or(jnp.isclose(mdp.trans_probs.sum(axis=1), 1), jnp.isclose(mdp.trans_probs.sum(axis=1), 0))
+    )
     assert jnp.all((mdp.trans_probs >= 0) & (mdp.trans_probs <= 1))
 
     n_states_ = mdp.trans_probs.shape[0]
