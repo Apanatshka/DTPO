@@ -196,14 +196,14 @@ class CustomMdp(MdpEnv):
             initial_state_p = data["initial_state_probs"]
 
             # Boswachter has from, action, to; DTPO expects from, to, action
-            trans_probs[[1, 2]] = trans_probs[[2, 1]]
-            rewards[[1, 2]] = rewards[[2, 1]]
+            trans_probs = np.swapaxes(trans_probs, 1, 2)
+            rewards = np.swapaxes(rewards, 1, 2)
 
             self.default_params_ = MarkovDecisionProcessParams(
-                trans_probs=jnp.array(trans_probs),
-                rewards=jnp.array(rewards),
-                initial_state_p=jnp.array(initial_state_p),
-                observations=jnp.array(observations),
+                trans_probs=jnp.array(trans_probs, dtype=float),
+                rewards=jnp.array(rewards, dtype=float),
+                initial_state_p=jnp.array(initial_state_p, dtype=float),
+                observations=jnp.array(observations, dtype=float),
             )
             check_mdp(self.default_params_)
             self.feature_names = list(data["feature_names"])
