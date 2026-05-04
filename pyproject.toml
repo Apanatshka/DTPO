@@ -6,7 +6,7 @@ authors = [
 ]
 description = "Interpretable reinforcement learning using policy gradients to optimize decision trees"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = "==3.11.15"
 dependencies = [
     "absl-py==2.1.0",
     "black==23.12.1",
