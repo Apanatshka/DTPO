@@ -11,12 +11,34 @@ from jax import lax
 
 @struct.dataclass
 class MarkovDecisionProcessParams:
-    """Encodes a discrete time, discrete action MDP using matrices."""
+    """Encodes a discrete time, discrete action MDP using sparse successor lists.
 
-    trans_probs: chex.Array
-    rewards: chex.Array
-    initial_state_p: chex.Array
-    observations: chex.Array
+    Instead of the dense `(state, next_state, action)` matrices, only the
+    successors with non-zero transition probability are stored:
+
+        next_states[s, a, k]   index of the k-th successor of (s, a)
+        next_probs[s, a, k]    P(next_states[s, a, k] | s, a)
+        next_rewards[s, a, k]  R(s, next_states[s, a, k], a)
+
+    Every `(s, a)` row is padded out to `max_successors` (the largest number of
+    successors over all state-action pairs) so the arrays keep static shapes and
+    the environment stays jit/vmap-friendly. Padding entries point back at `s`
+    and carry zero probability and zero reward, which makes them harmless if
+    they are ever selected (e.g. for a row whose probabilities are all zero).
+
+    Memory goes from O(n_states^2 * n_actions) to O(n_states * n_actions *
+    max_successors), and a step is O(max_successors) instead of O(n_states).
+
+    `absorbing` is precomputed at construction time: it marks the states that
+    self-loop with probability one and zero reward for every action.
+    """
+
+    next_states: chex.Array  # (n_states, n_actions, max_successors), integer
+    next_probs: chex.Array  # (n_states, n_actions, max_successors)
+    next_rewards: chex.Array  # (n_states, n_actions, max_successors)
+    initial_state_p: chex.Array  # (n_states,)
+    observations: chex.Array  # (n_states, n_features)
+    absorbing: chex.Array  # (n_states,), bool
     max_steps_in_episode: int = 1000
 
 
@@ -39,12 +61,19 @@ class MdpEnv(environment.Environment):
         action: float,
         params: MarkovDecisionProcessParams,
     ) -> tuple[chex.Array, EnvState, float, bool, dict]:
-        # Shape: state, next_state, action
-        trans_probs = params.trans_probs[state.state_index, :, action]
+        # Only the successors of (state, action) are touched, not all states.
+        probs = params.next_probs[state.state_index, action]
+        max_successors = probs.shape[0]
 
-        next_state_index = jax.random.choice(key, params.trans_probs.shape[0], p=trans_probs)
+        # Inverse CDF sampling over the successor list. Sampling this way rather
+        # than with jax.random.choice keeps a degenerate (all-zero) row from
+        # producing NaNs: it then simply selects a zero-reward self-loop.
+        cdf = jnp.cumsum(probs)
+        u = jax.random.uniform(key) * cdf[-1]
+        successor = jnp.clip(jnp.searchsorted(cdf, u, side="right"), 0, max_successors - 1)
 
-        reward = params.rewards[state.state_index, next_state_index, action]
+        next_state_index = params.next_states[state.state_index, action, successor]
+        reward = params.next_rewards[state.state_index, action, successor]
 
         next_state = EnvState(
             state_index=next_state_index,
@@ -76,10 +105,9 @@ class MdpEnv(environment.Environment):
         raise NotImplementedError()
 
     def is_terminal(self, state: EnvState, params: MarkovDecisionProcessParams) -> bool:
-        all_transitions_to_0_reward_state = jnp.logical_and(
-            jnp.all(params.trans_probs[state.state_index, state.state_index, :] == 1),
-            jnp.all(params.rewards[state.state_index, state.state_index, :] == 0),
-        )
+        # Whether a state only transitions to itself with zero reward is a
+        # property of the MDP, so it is precomputed instead of scanned here.
+        all_transitions_to_0_reward_state = params.absorbing[state.state_index]
         max_steps_reached = state.time == params.max_steps_in_episode
 
         return jnp.logical_or(all_transitions_to_0_reward_state, max_steps_reached)
@@ -114,31 +142,128 @@ class MdpEnv(environment.Environment):
         )
 
 
+def _absorbing_states(next_states: np.ndarray, next_probs: np.ndarray, next_rewards: np.ndarray) -> np.ndarray:
+    """States that, for every action, transition to themselves with probability 1 and reward 0."""
+    n_states = next_states.shape[0]
+
+    self_loop = next_states == np.arange(n_states, dtype=next_states.dtype)[:, None, None]
+    self_loop_p = np.where(self_loop, next_probs, 0).sum(axis=-1)
+    # Padding entries also point at `s`, but they have zero probability so they
+    # are excluded here.
+    self_loop_has_reward = np.any(self_loop & (next_probs > 0) & (next_rewards != 0), axis=(1, 2))
+
+    return np.all(np.isclose(self_loop_p, 1), axis=1) & ~self_loop_has_reward
+
+
+def sparsify_mdp(
+    trans_probs,
+    rewards,
+    initial_state_p,
+    observations,
+    max_steps_in_episode: int = 1000,
+    dtype=jnp.float32,
+    chunk_size: int | None = None,
+) -> MarkovDecisionProcessParams:
+    """Converts dense `(state, next_state, action)` matrices into a sparse MDP.
+
+    The dense arrays are read in chunks of rows so that the conversion never
+    needs a second copy of the full `n_states x n_states x n_actions` array, and
+    they are never put on the accelerator.
+    """
+    trans_probs = np.asarray(trans_probs)
+    rewards = np.asarray(rewards)
+
+    assert trans_probs.ndim == 3, "trans_probs must have axes (state, next_state, action)"
+    assert trans_probs.shape == rewards.shape
+    n_states, n_next_states, n_actions = trans_probs.shape
+    assert n_next_states == n_states
+
+    if chunk_size is None:
+        # Aim for ~4M elements per chunk so the temporary argsort stays small.
+        chunk_size = max(1, min(n_states, 4_000_000 // max(1, n_states * n_actions)))
+
+    # First pass: how wide does a successor list need to be?
+    max_successors = 1
+    for start in range(0, n_states, chunk_size):
+        counts = (trans_probs[start : start + chunk_size] > 0).sum(axis=1)
+        max_successors = max(max_successors, int(counts.max()))
+
+    next_states = np.zeros((n_states, n_actions, max_successors), dtype=np.int32)
+    next_probs = np.zeros((n_states, n_actions, max_successors), dtype=np.float64)
+    next_rewards = np.zeros((n_states, n_actions, max_successors), dtype=np.float64)
+
+    # Second pass: gather the non-zero successors of every (state, action).
+    for start in range(0, n_states, chunk_size):
+        stop = min(start + chunk_size, n_states)
+        probs_block = trans_probs[start:stop]  # (chunk, n_states, n_actions)
+        rewards_block = rewards[start:stop]
+
+        nonzero = probs_block > 0
+        # Stable argsort of the negated mask puts the non-zero successors first,
+        # in ascending state order.
+        order = np.argsort(~nonzero, axis=1, kind="stable")[:, :max_successors, :]
+        valid = np.take_along_axis(nonzero, order, axis=1)
+
+        # Padding points back at the source state with zero probability/reward.
+        indices = np.where(valid, order, np.arange(start, stop, dtype=order.dtype)[:, None, None])
+        probs = np.where(valid, np.take_along_axis(probs_block, order, axis=1), 0)
+        step_rewards = np.where(valid, np.take_along_axis(rewards_block, order, axis=1), 0)
+
+        # (chunk, max_successors, n_actions) -> (chunk, n_actions, max_successors)
+        next_states[start:stop] = np.swapaxes(indices, 1, 2)
+        next_probs[start:stop] = np.swapaxes(probs, 1, 2)
+        next_rewards[start:stop] = np.swapaxes(step_rewards, 1, 2)
+
+    absorbing = _absorbing_states(next_states, next_probs, next_rewards)
+
+    return MarkovDecisionProcessParams(
+        next_states=jnp.array(next_states, dtype=jnp.int32),
+        next_probs=jnp.array(next_probs, dtype=dtype),
+        next_rewards=jnp.array(next_rewards, dtype=dtype),
+        initial_state_p=jnp.array(initial_state_p, dtype=dtype),
+        observations=jnp.array(observations, dtype=dtype),
+        absorbing=jnp.array(absorbing, dtype=bool),
+        max_steps_in_episode=max_steps_in_episode,
+    )
+
+
 def check_mdp(mdp: MarkovDecisionProcessParams, check_jax_array_type=True):
     """
     Asserts that the shapes of the arrays inside the MDP are all valid and compatible.
     """
     if check_jax_array_type:
-        assert isinstance(mdp.trans_probs, jax.numpy.ndarray)
-        assert isinstance(mdp.rewards, jax.numpy.ndarray)
+        assert isinstance(mdp.next_states, jax.numpy.ndarray)
+        assert isinstance(mdp.next_probs, jax.numpy.ndarray)
+        assert isinstance(mdp.next_rewards, jax.numpy.ndarray)
         assert isinstance(mdp.initial_state_p, jax.numpy.ndarray)
         assert isinstance(mdp.observations, jax.numpy.ndarray)
+        assert isinstance(mdp.absorbing, jax.numpy.ndarray)
 
-    # trans_probs and rewards have axes: state, next_state, action
+    # The successor arrays have axes: state, action, successor
     # observations has axes: state, feature
-    assert len(mdp.trans_probs.shape) == 3
-    assert jnp.all(
-        jnp.logical_or(jnp.isclose(mdp.trans_probs.sum(axis=1), 1), jnp.isclose(mdp.trans_probs.sum(axis=1), 0))
-    )
-    assert jnp.all((mdp.trans_probs >= 0) & (mdp.trans_probs <= 1))
+    assert len(mdp.next_states.shape) == 3
+    assert mdp.next_probs.shape == mdp.next_states.shape
+    assert mdp.next_rewards.shape == mdp.next_states.shape
+    assert jnp.issubdtype(mdp.next_states.dtype, jnp.integer)
 
-    n_states_ = mdp.trans_probs.shape[0]
+    n_states_ = mdp.next_states.shape[0]
 
-    assert mdp.trans_probs.shape[1] == n_states_
-    assert mdp.trans_probs.shape == mdp.rewards.shape
+    assert jnp.all((mdp.next_states >= 0) & (mdp.next_states < n_states_))
+    assert jnp.all((mdp.next_probs >= 0) & (mdp.next_probs <= 1))
+    row_sums = mdp.next_probs.sum(axis=-1)
+    assert jnp.all(jnp.logical_or(jnp.isclose(row_sums, 1), jnp.isclose(row_sums, 0)))
+
+    # The used entries of a successor list are packed at the front and strictly
+    # increasing, so no successor is listed twice for the same (state, action).
+    used = mdp.next_probs > 0
+    assert jnp.all(used[..., 1:] <= used[..., :-1])
+    both_used = used[..., 1:] & used[..., :-1]
+    assert jnp.all(jnp.where(both_used, jnp.diff(mdp.next_states, axis=-1) > 0, True))
+
     assert mdp.initial_state_p.shape == (n_states_,)
     assert len(mdp.observations.shape) == 2
     assert mdp.observations.shape[0] == n_states_
+    assert mdp.absorbing.shape == (n_states_,)
 
 
 def remove_unreachable_states_mdp(mdp: MarkovDecisionProcessParams):
@@ -148,29 +273,42 @@ def remove_unreachable_states_mdp(mdp: MarkovDecisionProcessParams):
     Reachable states are determined using a depth first search to find all states
     reachable from the non-zero probability initial states.
     """
+    next_states = np.asarray(mdp.next_states)
+    next_probs = np.asarray(mdp.next_probs)
+    n_states = next_states.shape[0]
+
     visited = set()
-    stack = [int(x) for x in jnp.nonzero(mdp.initial_state_p)[0]]
-    state_state_probs = mdp.trans_probs.sum(axis=2)
+    stack = [int(x) for x in np.nonzero(np.asarray(mdp.initial_state_p))[0]]
     while stack:
         state = stack.pop()
+        if state in visited:
+            continue
         visited.add(state)
-        for next_state in jnp.nonzero(state_state_probs[state])[0]:
+        # Only the successor list of this state is scanned, not every state.
+        for next_state in next_states[state][next_probs[state] > 0]:
             next_state = int(next_state)
             if next_state not in visited:
                 stack.append(next_state)
 
-    if len(visited) == mdp.trans_probs.shape[0]:
+    if len(visited) == n_states:
         return mdp
 
-    print("Removed states:", mdp.trans_probs.shape[0] - len(visited))
+    print("Removed states:", n_states - len(visited))
 
     # Create a new MDP without all the unreachable states
-    visited = jnp.array(list(visited))
+    kept = np.array(sorted(visited))
+    # Successors of kept states are reachable, so they all get a valid new index.
+    remap = np.full(n_states, -1, dtype=np.int32)
+    remap[kept] = np.arange(len(kept), dtype=np.int32)
+
     new_mdp = MarkovDecisionProcessParams(
-        trans_probs=mdp.trans_probs[visited][:, visited],
-        rewards=mdp.rewards[visited][:, visited],
-        initial_state_p=mdp.initial_state_p[visited],
-        observations=mdp.observations[visited],
+        next_states=jnp.array(remap[next_states[kept]]),
+        next_probs=mdp.next_probs[kept],
+        next_rewards=mdp.next_rewards[kept],
+        initial_state_p=mdp.initial_state_p[kept],
+        observations=mdp.observations[kept],
+        absorbing=mdp.absorbing[kept],
+        max_steps_in_episode=mdp.max_steps_in_episode,
     )
 
     return new_mdp
@@ -199,12 +337,11 @@ class CustomMdp(MdpEnv):
             trans_probs = np.swapaxes(trans_probs, 1, 2)
             rewards = np.swapaxes(rewards, 1, 2)
 
-            self.default_params_ = MarkovDecisionProcessParams(
-                trans_probs=jnp.array(trans_probs, dtype=float),
-                rewards=jnp.array(rewards, dtype=float),
-                initial_state_p=jnp.array(initial_state_p, dtype=float),
-                observations=jnp.array(observations, dtype=float),
-            )
+            # The dense matrices are converted straight to sparse successor
+            # lists and dropped, so they never reach the device.
+            self.default_params_ = sparsify_mdp(trans_probs, rewards, initial_state_p, observations)
+            del trans_probs, rewards
+
             check_mdp(self.default_params_)
             self.feature_names = list(data["feature_names"])
             self.action_names = list(data["action_names"])
